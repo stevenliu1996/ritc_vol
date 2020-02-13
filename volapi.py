@@ -64,3 +64,4 @@ class VolCaseClient(RitClient):
         if is_last == True:
             return kind_news.head(1)
         else:
+            return kind_news

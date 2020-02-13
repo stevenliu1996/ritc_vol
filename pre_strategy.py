@@ -1,12 +1,18 @@
-from RIT_api_VolCase import VolCaseClient
-from apiUlt import url, apikey
-from stratUlt import ava_ticker, c2p_dict, p2c_dict
+from volapi import VolCaseClient
+# from apiUlt import url, apikey
 from py_vollib.black_scholes.implied_volatility import implied_volatility
 from py_vollib.black_scholes_merton.greeks.analytical import delta
 import numpy as np
 import pandas as pd
 import re
 import time
+
+url='http://localhost:8000/v1/'
+apikey={'X-API-Key':'QN1PO4LT'}
+c2p_dict = {'RTM2C'+str(i):'RTM2P'+str(i) for i in range(45, 55)}
+p2c_dict = {'RTM2P'+str(i):'RTM2C'+str(i) for i in range(45, 55)}
+ava_ticker = ['RTM2C'+str(i) for i in range(45, 55)]+['RTM2P'+str(i) for i in range(45, 55)]
+
 
 # Case Params
 r = 0   # risk free rate
@@ -37,7 +43,7 @@ while api.case_status() == True:
         now_tick = api.case_tick()[0][0]
 
     print(now_tick)
-    t = (600 - now_tick)/ 30/ 252 # time to maturity
+    t = (600 - now_tick - (api.case_tick()[0][2]-1)*300)/ 300 / 12 # time to maturity
 
     # get data
     pos = api.position()
@@ -48,8 +54,8 @@ while api.case_status() == True:
     S_ask = api.price(ticker="RTM",kind='ask')
     S_bid = api.price(ticker="RTM",kind='bid')
     S_last = api.price(ticker="RTM",kind='last')
-    call_list = [i for i in ava_ticker if 'C' in i]
-    put_list = [i for i in ava_ticker if 'P' in i]
+    call_list = [i for i in ava_ticker if '2C' in i]
+    put_list = [i for i in ava_ticker if '2P' in i]
 
     try:
         vol_news = api.news_kind("Announcement",is_last=True)["body"]
@@ -58,7 +64,7 @@ while api.case_status() == True:
         pass
 
     # define safe zone piecewise
-    if now_tick <= 450:
+    if now_tick + (api.case_tick()[0][2]-1)*300 <= 450:
         rng_d = real_vol - 0.01
         rng_u = real_vol + 0.01
     else:
@@ -72,23 +78,23 @@ while api.case_status() == True:
     # computation -- implied vol
     vol_dict = {}
     for call in call_list:
-        K = int(re.findall(r'\d+', call)[0])
+        K = int("".join(re.findall(r'\d', call))[1:])
         flag = 'c'
         try:
             iv = implied_volatility(prc_last[call], S_last, K, t, r, flag)
         except Exception:
-            iv = 0
+            iv = np.nan
         vol_dict[call] = iv
     for put in put_list:
-        K = int(re.findall(r'\d+', put)[0])
+        K = int("".join(re.findall(r'\d', call))[1:])
         flag = 'p'
         try:
             iv = implied_volatility(prc_last[put], S_last, K, t, r, flag)
         except Exception:
-            iv = 0
+            iv = np.nan
         vol_dict[put] = iv
     iv_s = pd.Series(vol_dict)
-
+#     print(iv_s)
     # find at-the-money option and its iv
     at_money_opt = []
     for i in iv_s.index:
@@ -97,13 +103,13 @@ while api.case_status() == True:
     now_iv = iv_s[at_money_opt].mean()
     print("rv =", real_vol,  "iv =", round(now_iv,2), "safe range", round(rng_d,2), "~", round(rng_u,2))
     if now_iv > rng_u:
-        amount = int((now_iv - rng_u)/0.1*alpha+1)
+        amount = min(int((now_iv - rng_u)/0.1*alpha+1), 100)
         for opt in at_money_opt:
             api.market_sell(opt, amount)
         exec_prc = prc_bid[at_money_opt].sum()
         print("sell straddle at", round(exec_prc,2), "by", amount)
     elif now_iv < rng_d:
-        amount =int((rng_d - now_iv)/0.1*alpha+1)
+        amount = min(int((rng_d - now_iv)/0.1*alpha+1), 100)
         for opt in at_money_opt:
             api.market_buy(opt, amount)
         exec_prc = prc_ask[at_money_opt].sum()
@@ -145,3 +151,4 @@ while api.case_status() == True:
         api.market_buy("RTM", -sum_delta)
 
     pass
+    
